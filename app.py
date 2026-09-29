@@ -240,9 +240,9 @@ def main():
         st.markdown("---")
         st.markdown("### Características")
         st.markdown("""
-        ✅ Un gráfico por pregunta
-        ✅ Agrupado por categorías
-        ✅ Gráficos automáticos:
+        Un gráfico por pregunta
+        Agrupado por categorías
+        Gráficos automáticos:
         - Donut (Sí/No, opciones)
         - Histograma (números)
         - Barras (textos múltiples)
@@ -264,7 +264,7 @@ def main():
         return
     
     # Información general
-    st.subheader("📊 Resumen de Datos")
+    st.subheader("Resumen de Datos")
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Total de Respuestas", len(df))
@@ -283,7 +283,7 @@ def main():
     
     for tab, (grupo_nombre, columnas) in zip(tabs, grupos.items()):
         with tab:
-            st.subheader(f"📋 {grupo_nombre}")
+            st.subheader(f" {grupo_nombre}")
             
             # Filtrar columnas que existan en el dataframe
             columnas_validas = [col for col in columnas if col in df.columns]
