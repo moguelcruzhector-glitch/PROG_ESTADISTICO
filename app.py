@@ -150,14 +150,21 @@ def explotar_valores_multiples(df, columna):
 def crear_grafico_pregunta(df, columna):
     """Crea el gráfico más apropiado según el tipo de dato"""
     
-    # PRIMERO: Explotar valores múltiples (separados por comas)
-    datos_expandidos = explotar_valores_multiples(df, columna)
+    # Detectar si es columna numérica
+    es_numerica = pd.api.types.is_numeric_dtype(df[columna])
+    
+    # Si es numérica, NO expandir por comas
+    if es_numerica:
+        datos_expandidos = df[columna].dropna()
+    else:
+        # Si es categórica, EXPLOTAR valores múltiples (separados por comas)
+        datos_expandidos = explotar_valores_multiples(df, columna)
     
     if len(datos_expandidos) == 0:
         st.warning(f"Sin datos para {columna}")
         return None
     
-    # Contar valores EXPANDIDOS (cada uno por separado)
+    # Contar valores
     conteos = datos_expandidos.value_counts().sort_values(ascending=False)
     
     # Crear DataFrame para el gráfico
