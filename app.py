@@ -122,20 +122,27 @@ def explotar_valores_multiples(df, columna):
     valores_expandidos = []
     
     for val in df[columna]:
-        if pd.isna(val) or str(val).strip() == '':
+        # Saltar NaN o vacíos
+        if pd.isna(val):
             continue
         
         val_str = str(val).strip()
         
-        # Si tiene comas, separar cada valor
+        if val_str == '' or val_str.lower() == 'ninguno':
+            continue
+        
+        # Si tiene comas, SEPARAR CADA VALOR
         if ',' in val_str:
-            partes = [p.strip() for p in val_str.split(',')]
-            # Agregar cada parte (eliminar vacías)
-            valores_expandidos.extend([p for p in partes if p])
+            # Dividir por coma y limpiar cada parte
+            partes = val_str.split(',')
+            for parte in partes:
+                parte_limpia = parte.strip()
+                # Solo agregar si no está vacío
+                if parte_limpia and parte_limpia.lower() != 'ninguno':
+                    valores_expandidos.append(parte_limpia)
         else:
-            # Si no tiene comas, agregar como está
-            if val_str:
-                valores_expandidos.append(val_str)
+            # Sin comas, agregar como está
+            valores_expandidos.append(val_str)
     
     return pd.Series(valores_expandidos)
 
@@ -144,24 +151,37 @@ def crear_grafico_pregunta(df, columna):
     """Crea el gráfico más apropiado según el tipo de dato"""
     
     # PRIMERO: Explotar valores múltiples (separados por comas)
-    datos_validos = explotar_valores_multiples(df, columna)
+    datos_expandidos = explotar_valores_multiples(df, columna)
     
-    if len(datos_validos) == 0:
+    if len(datos_expandidos) == 0:
         st.warning(f"Sin datos para {columna}")
         return None
     
-    # Contar valores expandidos
-    conteos = datos_validos.value_counts()
+    # Contar valores EXPANDIDOS (cada uno por separado)
+    conteos = datos_expandidos.value_counts().sort_values(ascending=False)
+    
+    # Crear DataFrame para el gráfico
+    df_grafico = pd.DataFrame({
+        'Categoría': conteos.index,
+        'Cantidad': conteos.values
+    })
     
     # SIEMPRE usar gráfico de pastel (donut)
     fig = px.pie(
-        values=conteos.values,
-        names=conteos.index,
+        df_grafico,
+        values='Cantidad',
+        names='Categoría',
         title=f"Distribución: {limpiar_columna(columna)}",
         color_discrete_sequence=px.colors.qualitative.Set3,
         hole=0.3  # Esto lo hace donut en lugar de pie completo
     )
-    fig.update_layout(height=450)
+    fig.update_layout(
+        height=550,
+        margin=dict(t=80, b=20, l=20, r=20),  # Margen superior más grande
+        title_font_size=16,
+        showlegend=True,
+        legend=dict(x=1.05, y=1)  # Leyenda a la derecha
+    )
     return fig
 
 
