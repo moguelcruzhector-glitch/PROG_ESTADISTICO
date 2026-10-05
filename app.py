@@ -230,41 +230,49 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        st.markdown("## Cargar Encuesta")
+        st.markdown("## 📤 Cargar Encuesta")
         
-        archivo = st.file_uploader("Sube tu CSV aquí", type=["csv"])
+        st.markdown("""
+        <div style="background: #ecf9f5; padding: 1rem; border-radius: 10px; margin-bottom: 1.5rem; border-left: 4px solid #16c784;">
+            <p style="margin: 0; font-size: 0.9rem; color: #0f8b4f;">
+            <strong>✓ Arrastra tu archivo CSV o haz click para seleccionar</strong>
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        archivo = st.file_uploader("", type=["csv"], label_visibility="collapsed")
         
         if archivo:
-            st.success("✅ Archivo cargado")
+            st.success("✅ Archivo cargado correctamente")
+            st.markdown(f"📄 **{archivo.name}**", )
         
         st.markdown("---")
-        st.markdown("### Características")
+        
+        st.markdown("### 📊 Características")
         st.markdown("""
-        Un gráfico por pregunta
-        Agrupado por categorías
-        Gráficos automáticos:
-        - Donut (Sí/No, opciones)
-        - Histograma (números)
-        - Barras (textos múltiples)
+        ✓ Un gráfico por pregunta  
+        ✓ Agrupado por categorías  
+        ✓ Gráficos automáticos:
+          • Donut (Sí/No)
+          • Histograma (números)
+          • Barras (textos)
         """)
     
     # Cargar datos
-    if archivo is not None:
-        df = cargar_datos(archivo=archivo)
-    else:
-        # Intentar cargar archivo por defecto
-        try:
-            df = cargar_datos(archivo=None)
-        except:
-            st.info("Por favor, sube tu archivo CSV")
-            return
+    if archivo is None:
+        # Si no hay archivo, mostrar mensaje y salir
+        st.info("👆 Sube tu archivo CSV en el panel izquierdo para comenzar el análisis")
+        return
+    
+    # Cargar el archivo subido
+    df = cargar_datos(archivo=archivo)
     
     if df is None or df.empty:
-        st.error("No se pudieron cargar los datos")
+        st.error("No se pudieron cargar los datos. Verifica que sea un archivo CSV válido")
         return
     
     # Información general
-    st.subheader("Resumen de Datos")
+    st.subheader("📊 Resumen de Datos")
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Total de Respuestas", len(df))
@@ -283,7 +291,7 @@ def main():
     
     for tab, (grupo_nombre, columnas) in zip(tabs, grupos.items()):
         with tab:
-            st.subheader(f" {grupo_nombre}")
+            st.subheader(f"📋 {grupo_nombre}")
             
             # Filtrar columnas que existan en el dataframe
             columnas_validas = [col for col in columnas if col in df.columns]
