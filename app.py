@@ -117,82 +117,52 @@ def limpiar_columna(col_name):
     return col_name.replace('_', ' ').title()
 
 
-def explotar_valores_multiples(serie):
-    """Explota valores separados por comas en una serie"""
+def explotar_valores_multiples(df, columna):
+    """Explota valores separados por comas en una columna y retorna serie expandida"""
     valores_expandidos = []
-    for val in serie.dropna():
-        if pd.notna(val):
-            val_str = str(val).strip()
-            if ',' in val_str:
-                # Si hay comas, separar y limpiar cada parte
-                partes = [p.strip() for p in val_str.split(',')]
-                valores_expandidos.extend(partes)
-            else:
+    
+    for val in df[columna]:
+        if pd.isna(val) or str(val).strip() == '':
+            continue
+        
+        val_str = str(val).strip()
+        
+        # Si tiene comas, separar cada valor
+        if ',' in val_str:
+            partes = [p.strip() for p in val_str.split(',')]
+            # Agregar cada parte (eliminar vacías)
+            valores_expandidos.extend([p for p in partes if p])
+        else:
+            # Si no tiene comas, agregar como está
+            if val_str:
                 valores_expandidos.append(val_str)
+    
     return pd.Series(valores_expandidos)
 
 
 def crear_grafico_pregunta(df, columna):
     """Crea el gráfico más apropiado según el tipo de dato"""
     
-    # Datos válidos (sin NaN y sin valores vacíos)
-    datos_validos = df[columna].dropna()
-    datos_validos = datos_validos[datos_validos != '']
+    # PRIMERO: Explotar valores múltiples (separados por comas)
+    datos_validos = explotar_valores_multiples(df, columna)
     
     if len(datos_validos) == 0:
         st.warning(f"Sin datos para {columna}")
         return None
     
-    # Intentar explotar valores múltiples (separados por comas)
-    try:
-        datos_validos = explotar_valores_multiples(datos_validos)
-    except:
-        pass
+    # Contar valores expandidos
+    conteos = datos_validos.value_counts()
     
-    # Detectar tipo de dato
-    try:
-        # Si es numérico
-        df[columna] = pd.to_numeric(df[columna], errors='ignore')
-        if pd.api.types.is_numeric_dtype(df[columna]):
-            # Histograma para números
-            fig = px.histogram(
-                df,
-                x=columna,
-                nbins=15,
-                title=f"Distribución: {limpiar_columna(columna)}",
-                color_discrete_sequence=["#16c784"],
-                labels={columna: limpiar_columna(columna)}
-            )
-            fig.update_layout(height=400, showlegend=False)
-            return fig
-    except:
-        pass
-    
-    # Si es categórico/texto
-    conteos = datos_validos.value_counts().head(15)
-    
-    # Si tiene pocos valores únicos (Si/No, opciones, etc)
-    if len(conteos) <= 10:
-        fig = px.pie(
-            values=conteos.values,
-            names=conteos.index,
-            title=f"Distribución: {limpiar_columna(columna)}",
-            color_discrete_sequence=px.colors.qualitative.Set3,
-            hole=0.3
-        )
-        fig.update_layout(height=450)
-        return fig
-    else:
-        # Si tiene muchos valores, usar barras
-        fig = px.bar(
-            x=conteos.index,
-            y=conteos.values,
-            title=f"Conteo: {limpiar_columna(columna)}",
-            labels={'x': limpiar_columna(columna), 'y': 'Frecuencia'},
-            color_discrete_sequence=["#0f8b4f"]
-        )
-        fig.update_layout(height=400, showlegend=False, xaxis_tickangle=-45)
-        return fig
+    # SIEMPRE usar gráfico de pastel (donut)
+    fig = px.pie(
+        values=conteos.values,
+        names=conteos.index,
+        title=f"Distribución: {limpiar_columna(columna)}",
+        color_discrete_sequence=px.colors.qualitative.Set3,
+        hole=0.3  # Esto lo hace donut en lugar de pie completo
+    )
+    fig.update_layout(height=450)
+    return fig
 
 
 def agrupar_preguntas(df):
@@ -251,7 +221,7 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        st.markdown("##  Cargar Encuesta")
+        st.markdown("## 📤 Cargar Encuesta")
         
         archivo = st.file_uploader("Sube tu archivo CSV aquí", type=["csv"])
         
