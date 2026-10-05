@@ -117,6 +117,21 @@ def limpiar_columna(col_name):
     return col_name.replace('_', ' ').title()
 
 
+def explotar_valores_multiples(serie):
+    """Explota valores separados por comas en una serie"""
+    valores_expandidos = []
+    for val in serie.dropna():
+        if pd.notna(val):
+            val_str = str(val).strip()
+            if ',' in val_str:
+                # Si hay comas, separar y limpiar cada parte
+                partes = [p.strip() for p in val_str.split(',')]
+                valores_expandidos.extend(partes)
+            else:
+                valores_expandidos.append(val_str)
+    return pd.Series(valores_expandidos)
+
+
 def crear_grafico_pregunta(df, columna):
     """Crea el gráfico más apropiado según el tipo de dato"""
     
@@ -127,6 +142,12 @@ def crear_grafico_pregunta(df, columna):
     if len(datos_validos) == 0:
         st.warning(f"Sin datos para {columna}")
         return None
+    
+    # Intentar explotar valores múltiples (separados por comas)
+    try:
+        datos_validos = explotar_valores_multiples(datos_validos)
+    except:
+        pass
     
     # Detectar tipo de dato
     try:
@@ -230,7 +251,7 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        st.markdown("## 📤 Cargar Encuesta")
+        st.markdown("##  Cargar Encuesta")
         
         archivo = st.file_uploader("Sube tu archivo CSV aquí", type=["csv"])
         
