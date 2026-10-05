@@ -232,30 +232,21 @@ def main():
     with st.sidebar:
         st.markdown("## 📤 Cargar Encuesta")
         
-        st.markdown("""
-        <div style="background: #ecf9f5; padding: 1rem; border-radius: 10px; margin-bottom: 1.5rem; border-left: 4px solid #16c784;">
-            <p style="margin: 0; font-size: 0.9rem; color: #0f8b4f;">
-            <strong>✓ Arrastra tu archivo CSV o haz click para seleccionar</strong>
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        archivo = st.file_uploader("", type=["csv"], label_visibility="collapsed")
+        archivo = st.file_uploader("Sube tu archivo CSV aquí", type=["csv"])
         
         if archivo:
-            st.success("✅ Archivo cargado correctamente")
-            st.markdown(f"📄 **{archivo.name}**", )
+            st.success(f"✅ {archivo.name}")
+        else:
+            st.info("Selecciona un archivo CSV para comenzar")
         
         st.markdown("---")
         
-        st.markdown("### 📊 Características")
+        st.markdown("### ✨ Características")
         st.markdown("""
-        ✓ Un gráfico por pregunta  
-        ✓ Agrupado por categorías  
-        ✓ Gráficos automáticos:
-          • Donut (Sí/No)
-          • Histograma (números)
-          • Barras (textos)
+        • Un gráfico por pregunta
+        • Agrupado por categorías
+        • Gráficos automáticos
+        • Análisis completo
         """)
     
     # Cargar datos
