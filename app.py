@@ -8,6 +8,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import numpy as np
+import re
 
 # Configuración
 st.set_page_config(
@@ -128,6 +129,10 @@ def explotar_valores_multiples(df, columna):
         
         val_str = str(val).strip()
         
+        # --- EL TRUCO ESTÁ AQUÍ ---
+        # Reemplazar la coma por un punto SOLO si está entre dos números (ej. "1,67" -> "1.67")
+        val_str = re.sub(r'(\d),(\d)', r'\1.\2', val_str)
+        
         if val_str == '' or val_str.lower() == 'ninguno':
             continue
         
@@ -145,8 +150,6 @@ def explotar_valores_multiples(df, columna):
             valores_expandidos.append(val_str)
     
     return pd.Series(valores_expandidos)
-
-
 def crear_grafico_pregunta(df, columna):
     """Crea el gráfico más apropiado según el tipo de dato"""
     
