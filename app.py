@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 import streamlit as st
 import numpy as np
 import re
+import unicodedata
 
 # Configuración
 st.set_page_config(
@@ -99,13 +100,23 @@ def aplicar_estilo():
 
 
 def cargar_datos(archivo=None):
-    """Carga el CSV"""
+    """Carga el CSV (prueba varias codificaciones para evitar errores con acentos y eñes)"""
     try:
         if archivo is not None:
-            df = pd.read_csv(archivo)
+            df = None
+            for codificacion in ("utf-8-sig", "utf-8", "latin-1"):
+                try:
+                    archivo.seek(0)  # volver al inicio antes de cada intento
+                    df = pd.read_csv(archivo, encoding=codificacion)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            if df is None:
+                st.error("No se pudo leer el archivo (codificación no reconocida)")
+                return None
         else:
             df = pd.read_csv("diana.csv")
-        
+
         df.columns = df.columns.str.strip()
         return df
     except Exception as e:
@@ -150,6 +161,8 @@ def explotar_valores_multiples(df, columna):
             valores_expandidos.append(val_str)
     
     return pd.Series(valores_expandidos)
+
+
 def crear_grafico_pregunta(df, columna):
     """Crea el gráfico más apropiado según el tipo de dato"""
     
@@ -195,45 +208,69 @@ def crear_grafico_pregunta(df, columna):
     return fig
 
 
+def _normalizar(texto):
+    """Minúsculas y sin acentos (energía -> energia)"""
+    texto = unicodedata.normalize("NFD", str(texto).lower())
+    return "".join(c for c in texto if unicodedata.category(c) != "Mn")
+
+
+def _coincide(col_norm, palabras):
+    """
+    True si alguna palabra aparece como palabra completa en el nombre de la columna.
+    Así 'sal' ya NO coincide con 'salchicha' ni 'res' con 'respuesta'.
+    Acepta plural simple (s / es).
+    """
+    for p in palabras:
+        p = _normalizar(p).strip('_')
+        patron = rf'(?<![a-z0-9]){re.escape(p)}(?:s|es)?(?![a-z0-9])'
+        if re.search(patron, col_norm):
+            return True
+    return False
+
+
 def agrupar_preguntas(df):
-    """Agrupa preguntas por categoría"""
-    
-    grupos = {
-        "Datos Demográficos": [col for col in df.columns if any(x in col.lower() for x in ['sexo', 'edad', 'escolaridad', 'ocupacion'])],
-        
-        "Medidas Antropométricas": [col for col in df.columns if any(x in col.lower() for x in ['peso', 'talla', 'cintura', 'cadera', 'pantorrilla', 'altura_rodilla', 'brazada'])],
-        
-        "Salud General": [col for col in df.columns if any(x in col.lower() for x in ['alergia', 'medicamento', 'desparasitado', 'padecimiento'])],
-        
-        "Horarios de Comidas": [col for col in df.columns if any(x in col.lower() for x in ['hora_desayuno', 'hora_comida', 'hora_cena'])],
-        
-        "Lugar de Compra": [col for col in df.columns if any(x in col.lower() for x in ['lugar_compra', 'compra_'])],
-        
-        "Consumo de Carnes": [col for col in df.columns if any(x in col.lower() for x in ['res', 'puerco', 'pescado', 'pollo', 'gallina']) and 'consumo' in col.lower()],
-        
-        "Consumo de Verduras y Frutas": [col for col in df.columns if any(x in col.lower() for x in ['frutas', 'verduras']) and 'consumo' in col.lower()],
-        
-        "Consumo de Leguminosas": [col for col in df.columns if any(x in col.lower() for x in ['frijoles', 'lentejas', 'garbanzo']) and 'consumo' in col.lower()],
-        
-        "Consumo de Lácteos": [col for col in df.columns if any(x in col.lower() for x in ['leche', 'queso', 'crema', 'huevo']) and 'consumo' in col.lower()],
-        
-        "Alimentos Ultraprocesados": [col for col in df.columns if any(x in col.lower() for x in ['galletas', 'pan_dulce', 'sabritas', 'refrescos', 'chocolates', 'dulces', 'energeticas']) and 'consumo' in col.lower()],
-        
-        "Productos Procesados": [col for col in df.columns if any(x in col.lower() for x in ['sopa', 'salchicha', 'jamon', 'tocino', 'chorizo', 'knorr', 'sal']) and 'consumo' in col.lower()],
-        
-        "Grasas de Cocina": [col for col in df.columns if any(x in col.lower() for x in ['aceite', 'manteca', 'margarina', 'mantequilla']) and 'cocina' in col.lower()],
-        
-        "Características de Vivienda": [col for col in df.columns if any(x in col.lower() for x in ['cuartos', 'techo', 'pared', 'piso', 'tenencia', 'combustible', 'agua', 'energia', 'sanitario', 'basura'])],
-        
-        "Educación Nutricional": [col for col in df.columns if 'educacion' in col.lower()],
-        
-        "Estado Emocional": [col for col in df.columns if any(x in col.lower() for x in ['emocional', 'triste', 'dormir', 'preocupado', 'pensamientos', 'malestar'])],
-        
-        "Actividad Física": [col for col in df.columns if any(x in col.lower() for x in ['actividad_fisica', 'ejercicio', 'traslado', 'horas_sentado', 'nivel_actividad', 'interes'])],
-        
-        "Agricultura y Ganadería": [col for col in df.columns if any(x in col.lower() for x in ['cultiva', 'alimentos_producidos', 'espacio', 'animales', 'cria', 'aves', 'conejos'])]
-    }
-    
+    """Agrupa preguntas por categoría. Cada columna cae en UN solo grupo
+    y lo que no encaje va a 'Otras Preguntas' para que no se pierda ninguna."""
+
+    # (nombre del grupo, palabras clave, texto que además debe contener el nombre o None)
+    reglas = [
+        ("Datos Demográficos", ['sexo', 'edad', 'escolaridad', 'ocupacion'], None),
+        ("Medidas Antropométricas", ['peso', 'talla', 'cintura', 'cadera', 'pantorrilla', 'altura_rodilla', 'brazada'], None),
+        ("Salud General", ['alergia', 'medicamento', 'desparasitado', 'padecimiento'], None),
+        ("Horarios de Comidas", ['hora_desayuno', 'hora_comida', 'hora_cena'], None),
+        ("Lugar de Compra", ['lugar_compra', 'compra'], None),
+        ("Consumo de Carnes", ['res', 'puerco', 'pescado', 'pollo', 'gallina'], 'consumo'),
+        ("Consumo de Verduras y Frutas", ['frutas', 'verduras'], 'consumo'),
+        ("Consumo de Leguminosas", ['frijoles', 'lentejas', 'garbanzo'], 'consumo'),
+        ("Consumo de Lácteos", ['leche', 'queso', 'crema', 'huevo'], 'consumo'),
+        ("Alimentos Ultraprocesados", ['galletas', 'pan_dulce', 'sabritas', 'refrescos', 'chocolates', 'dulces', 'energeticas'], 'consumo'),
+        ("Productos Procesados", ['sopa', 'salchicha', 'jamon', 'tocino', 'chorizo', 'knorr', 'sal'], 'consumo'),
+        ("Grasas de Cocina", ['aceite', 'manteca', 'margarina', 'mantequilla'], 'cocina'),
+        ("Características de Vivienda", ['cuartos', 'techo', 'pared', 'piso', 'tenencia', 'combustible', 'agua', 'energia', 'sanitario', 'basura'], None),
+        ("Educación Nutricional", ['educacion'], None),
+        ("Estado Emocional", ['emocional', 'triste', 'dormir', 'preocupado', 'pensamientos', 'malestar'], None),
+        ("Actividad Física", ['actividad_fisica', 'ejercicio', 'traslado', 'horas_sentado', 'nivel_actividad', 'interes'], None),
+        ("Agricultura y Ganadería", ['cultiva', 'alimentos_producidos', 'espacio', 'animales', 'cria', 'aves', 'conejos'], None),
+    ]
+
+    grupos = {nombre: [] for nombre, _, _ in reglas}
+    otras = []
+
+    for col in df.columns:
+        col_norm = _normalizar(col)
+        asignada = False
+        for nombre, palabras, requiere in reglas:
+            if requiere and requiere not in col_norm:
+                continue
+            if _coincide(col_norm, palabras):
+                grupos[nombre].append(col)
+                asignada = True
+                break  # una columna = un solo grupo
+        if not asignada:
+            otras.append(col)
+
+    grupos["Otras Preguntas"] = otras
+
     # Filtrar grupos vacíos
     return {k: v for k, v in grupos.items() if v}
 
@@ -324,27 +361,25 @@ def main():
                         # Key único para cada gráfico
                         st.plotly_chart(fig, use_container_width=True, key=f"{grupo_nombre}_{i}_{columna}")
     
-    # Pestaña extra: Datos Crudos
+    # Descarga del resumen (un solo clic, sin botón intermedio)
+    resumen = pd.DataFrame({
+        'Pregunta': df.columns,
+        'Tipo de Dato': [
+            'Numérico' if pd.api.types.is_numeric_dtype(df[col]) else 'Texto'
+            for col in df.columns
+        ],
+        'Valores Válidos': [len(df[col].dropna()) for col in df.columns],
+        'Valores Únicos': [df[col].nunique() for col in df.columns]
+    })
+    
     with st.sidebar:
-        if st.button("📥 Descargar Análisis"):
-            # Generar resumen en CSV
-            resumen = pd.DataFrame({
-                'Pregunta': df.columns,
-                'Tipo de Dato': [
-                    'Numérico' if pd.api.types.is_numeric_dtype(df[col]) else 'Texto'
-                    for col in df.columns
-                ],
-                'Valores Válidos': [len(df[col].dropna()) for col in df.columns],
-                'Valores Únicos': [df[col].nunique() for col in df.columns]
-            })
-            
-            csv = resumen.to_csv(index=False)
-            st.download_button(
-                label="Descargar resumen",
-                data=csv,
-                file_name="resumen_analisis.csv",
-                mime="text/csv"
-            )
+        st.markdown("---")
+        st.download_button(
+            label="📥 Descargar resumen",
+            data=resumen.to_csv(index=False),
+            file_name="resumen_analisis.csv",
+            mime="text/csv"
+        )
 
 
 if __name__ == "__main__":
