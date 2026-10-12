@@ -247,6 +247,15 @@ def buscar_columna(df, nombre):
     return None
 
 
+def buscar_columna_que_empiece(df, inicio):
+    """Encuentra la columna cuyo nombre empieza con ese texto (ej. 'Ultima vez...')."""
+    clave = _normalizar(inicio)
+    for c in df.columns:
+        if _normalizar(c).startswith(clave):
+            return c
+    return None
+
+
 def conteos_columna(df, nombre, separar=True):
     """Cuenta las respuestas de una columna (separando por comas con la función original)."""
     col = buscar_columna(df, nombre)
@@ -418,13 +427,43 @@ def _a_meses(texto):
 
 
 def g_desparasitacion(df):
-    c = conteos_columna(df, "Ultima vez", separar=False)
-    if c is None:
+    """Une las dos columnas: cuántas personas están desparasitadas (Sí/No)
+    y cuánto tiempo hace de su última desparasitación."""
+    col_d = buscar_columna(df, "Desparasitacion")
+    col_t = buscar_columna_que_empiece(df, "Ultima vez")
+    if col_d is None or col_t is None:
+        st.info("No encontré las columnas de desparasitación.")
         return None
-    orden = sorted(c.index, key=lambda x: (_a_meses(x) is None, _a_meses(x) or 0))
-    si, no = contar_si_no(df, "Desparasitacion")
-    titulo = f"Última vez que se desparasitaron (Sí: {si} · No: {no})"
-    return grafico_barras(c, titulo, orden_fijo=orden, color_unico="#00B894")
+
+    estado = df[col_d].map(lambda v: None if pd.isna(v) else {"si": "Sí", "no": "No"}.get(_normalizar(v)))
+
+    con_fecha = df[col_t].notna() & (df[col_t].astype(str).str.strip() != "")
+    tiempo = pd.Series("Sin fecha registrada", index=df.index, dtype=object)
+    if con_fecha.any():
+        tiempo[con_fecha] = unificar_categorias(df.loc[con_fecha, col_t].astype(str)).values
+
+    d = pd.DataFrame({"Desparasitado": estado, "Tiempo": tiempo}).dropna(subset=["Desparasitado"])
+    if d.empty:
+        st.warning("Sin datos de desparasitación")
+        return None
+
+    conteo = d.groupby(["Tiempo", "Desparasitado"]).size().reset_index(name="Personas")
+    orden = sorted(d["Tiempo"].unique(),
+                   key=lambda x: (x == "Sin fecha registrada", _a_meses(x) is None, _a_meses(x) or 0))
+    si, no = int((d["Desparasitado"] == "Sí").sum()), int((d["Desparasitado"] == "No").sum())
+
+    fig = px.bar(conteo, x="Tiempo", y="Personas", color="Desparasitado", text="Personas",
+                 color_discrete_map={"Sí": "#00B894", "No": "#FF7675"},
+                 category_orders={"Desparasitado": ["Sí", "No"]},
+                 title=f"Desparasitación y tiempo desde la última vez (Sí: {si} · No: {no})")
+    fig.update_xaxes(title="Última vez que se desparasitó", categoryorder="array",
+                     categoryarray=orden, tickangle=-30)
+    fig.update_yaxes(title="Personas")
+    fig.update_traces(textposition="inside", textfont=dict(color="white", size=12))
+    fig.update_layout(height=420, margin=dict(t=80, b=20, l=10, r=20), title_font_size=14,
+                      bargap=0.25, barmode="stack",
+                      legend=dict(orientation="h", y=1.12, x=0, title=None))
+    return fig
 
 
 def g_lugar_compra(df):
@@ -538,6 +577,56 @@ def g_cultivos(df):
     return fig
 
 
+def g_salud_emocional(df):
+    """Dispersión: cada punto es una emoción reportada por una persona.
+    Eje X = edad, eje Y = emoción, color = sexo (con un poco de separación para que no se encimen)."""
+    col_e = buscar_columna(df, "Estado emocional frecuente")
+    col_x = buscar_columna(df, "Edad")
+    col_s = buscar_columna(df, "Sexo")
+    if col_e is None or col_x is None:
+        st.info("No encontré las columnas de estado emocional o edad.")
+        return None
+
+    filas = []
+    for idx in df.index:
+        # Se usa la función original para separar varias emociones por coma
+        for emocion in explotar_valores_multiples(df.loc[[idx]], col_e):
+            filas.append({"idx": idx, "Emoción": emocion})
+    if not filas:
+        st.warning("Sin datos para estado emocional")
+        return None
+
+    d = pd.DataFrame(filas)
+    d["Emoción"] = unificar_categorias(d["Emoción"])
+    d["Edad"] = pd.to_numeric(df.loc[d["idx"], col_x], errors="coerce").values
+    if col_s is not None:
+        sexo = df.loc[d["idx"], col_s].fillna("Sin dato").astype(str)
+        d["Sexo"] = unificar_categorias(sexo).values
+    else:
+        d["Sexo"] = "Sin dato"
+    d = d.dropna(subset=["Edad"])
+
+    conteos = d["Emoción"].value_counts()
+    cats = list(conteos.index)                       # de más a menos frecuente
+    pos = {c: i for i, c in enumerate(cats)}
+    rng = np.random.default_rng(1)
+    d["Posición"] = d["Emoción"].map(pos) + rng.uniform(-0.22, 0.22, len(d))
+
+    mapa = _mapa_colores(sorted(d["Sexo"].unique()))
+    fig = px.scatter(d, x="Edad", y="Posición", color="Sexo", color_discrete_map=mapa,
+                     hover_data={"Posición": False, "Emoción": True, "Edad": True},
+                     title=f"Salud emocional: estado emocional frecuente según edad y sexo "
+                           f"(n={d['idx'].nunique()} personas)")
+    fig.update_traces(marker=dict(size=13, opacity=0.85, line=dict(width=1, color="white")))
+    fig.update_yaxes(tickmode="array", tickvals=list(range(len(cats))),
+                     ticktext=[f"{c} ({int(conteos[c])})" for c in cats],
+                     range=[len(cats) - 0.4, -0.6], title=None)
+    fig.update_xaxes(title="Edad (años)")
+    fig.update_layout(height=min(560, 140 + 55 * len(cats)), margin=dict(t=70, b=30, l=10, r=20),
+                      title_font_size=14, legend=dict(orientation="h", y=1.1, x=0, title=None))
+    return fig
+
+
 def g_animales(df):
     c = conteos_columna(df, "Cuales")
     if c is None:
@@ -590,7 +679,8 @@ def main():
         st.metric("Datos Completos", f"{(1 - df.isnull().sum().sum() / (len(df) * len(df.columns))) * 100:.1f}%")
 
     tabs = st.tabs(["👥 Demografía", "⚖️ Estado Nutricional", "💊 Salud y Educación",
-                    "🛒 Alimentación", "🏃 Actividad y Bienestar", "🌱 Cultivos y Animales"])
+                    "🛒 Alimentación", "🏃 Actividad Física", "💭 Salud Emocional",
+                    "🌱 Cultivos y Animales"])
 
     with tabs[0]:
         c1, c2, c3 = st.columns(3)
@@ -609,7 +699,7 @@ def main():
             mostrar(g_icc(df), "icc")
 
     with tabs[2]:
-        c1, c2 = st.columns(2)
+        c1, c2 = st.columns([3, 2])
         with c1:
             mostrar(g_desparasitacion(df), "desparasitacion")
         with c2:
@@ -632,15 +722,18 @@ def main():
             mostrar(g_tipo_af(df), "tipo_af")
         with c3:
             mostrar(g_nivel_af(df), "nivel_af")
-        c4, c5, c6 = st.columns(3)
+        c4, c5 = st.columns(2)
         with c4:
             mostrar(g_traslado(df), "traslado")
         with c5:
             mostrar(g_interes(df), "interes")
-        with c6:
-            mostrar(g_emocional(df), "emocional")
 
     with tabs[5]:
+        mostrar(g_salud_emocional(df), "salud_emocional")
+        st.caption("Cada punto es una emoción reportada por una persona; "
+                   "si alguien marcó varias emociones, aparece un punto por cada una.")
+
+    with tabs[6]:
         c1, c2 = st.columns(2)
         with c1:
             mostrar(g_cultivos(df), "cultivos")
