@@ -655,14 +655,34 @@ def g_salud_emocional(df):
     cats = list(conteos.index)                       # de más a menos frecuente
     pos = {c: i for i, c in enumerate(cats)}
     rng = np.random.default_rng(1)
-    d["Posición"] = d["Emoción"].map(pos) + rng.uniform(-0.22, 0.22, len(d))
+    # Posición categórica sin jitter: se usa solo para calcular la línea de tendencia.
+    # El jitter visual de los puntos se conserva para evitar que se encimen.
+    d["Posición_base"] = d["Emoción"].map(pos)
+    d["Posición"] = d["Posición_base"] + rng.uniform(-0.22, 0.22, len(d))
 
     mapa = _mapa_colores(sorted(d["Sexo"].unique()))
     fig = px.scatter(d, x="Edad", y="Posición", color="Sexo", color_discrete_map=mapa,
-                     hover_data={"Posición": False, "Emoción": True, "Edad": True},
+                     hover_data={"Posición": False, "Posición_base": False,
+                                 "Emoción": True, "Edad": True},
                      title=f"Salud emocional: estado emocional frecuente según edad y sexo "
                            f"(n={d['idx'].nunique()} personas)")
     fig.update_traces(marker=dict(size=13, opacity=0.85, line=dict(width=1, color="white")))
+
+    # Línea de tendencia lineal (sin depender de statsmodels).
+    # Se añade solo si hay al menos dos edades distintas y suficientes datos.
+    if len(d) >= 2 and d["Edad"].nunique() >= 2:
+        coeficientes = np.polyfit(d["Edad"].astype(float), d["Posición_base"].astype(float), 1)
+        x_tendencia = np.linspace(d["Edad"].min(), d["Edad"].max(), 100)
+        y_tendencia = np.polyval(coeficientes, x_tendencia)
+        fig.add_trace(go.Scatter(
+            x=x_tendencia,
+            y=y_tendencia,
+            mode="lines",
+            name="Línea de tendencia",
+            line=dict(color="#111827", width=3, dash="dash"),
+            hovertemplate="Edad: %{x:.1f}<br>Posición estimada: %{y:.2f}<extra>Línea de tendencia</extra>"
+        ))
+
     fig.update_yaxes(tickmode="array", tickvals=list(range(len(cats))),
                      ticktext=[f"{c} ({int(conteos[c])})" for c in cats],
                      range=[len(cats) - 0.4, -0.6], title=None)
