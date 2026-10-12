@@ -320,7 +320,7 @@ def grafico_barras(conteos, titulo, horizontal=False, nombres_dentro=False,
         if nombres_dentro:
             fig.update_yaxes(showticklabels=False)
             fig.update_traces(textposition='inside', insidetextanchor='start',
-                              constraintext='none')
+                              constraintext='none', textangle=0)   # textangle=0: texto siempre horizontal
             maximo = max(df_g['Cantidad'])
             texto_color = {r['Categoría']: ("white" if r['Cantidad'] / maximo >= 0.45 else "#2d3436")
                            for _, r in df_g.iterrows()}
