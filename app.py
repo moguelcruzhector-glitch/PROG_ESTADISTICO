@@ -10,85 +10,130 @@ import streamlit as st
 import numpy as np
 import re
 import unicodedata
+import base64
+from pathlib import Path
+from functools import lru_cache
 
 # Configuración
+CARPETA = Path(__file__).parent
+
+
+def _icono_pagina():
+    """Usa el logo de la Clínica como ícono de la pestaña; si no está, un emoji."""
+    try:
+        from PIL import Image
+        return Image.open(CARPETA / "logo_clinica.png")
+    except Exception:
+        return "🥗"
+
+
 st.set_page_config(
-    page_title="Análisis Nutricional",
-    page_icon="🥗",
+    page_title="Clínica de Nutrición UNICACH",
+    page_icon=_icono_pagina(),
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 
+@lru_cache(maxsize=None)
+def _img_tag(nombre_archivo, alt):
+    """Imagen incrustada en el HTML. Si el archivo no está junto al código, no muestra nada."""
+    try:
+        datos = base64.b64encode((CARPETA / nombre_archivo).read_bytes()).decode()
+        return f'<img class="hero-logo" src="data:image/png;base64,{datos}" alt="{alt}">'
+    except Exception:
+        return ""
+
+
 def aplicar_estilo():
-    """CSS profesional para nutriólogos"""
+    """Estilo con los azules de los logos (Clínica de Nutrición y UNICACH)"""
     st.markdown(
         """
         <style>
-        [data-testid="stAppViewContainer"] {
-            background: linear-gradient(135deg, #0f8b4f 0%, #1a5f3e 100%);
-            background-attachment: fixed;
-        }
-        
-        [data-testid="stMainBlockContainer"] {
-            background: rgba(255, 255, 255, 0.94);
-            border-radius: 15px;
-            padding: 1rem 1.5rem;
-            margin: 0.5rem;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+        :root {
+            --azul: #003878;
+            --azul-oscuro: #0B2A5B;
+            --pizarra: #586078;
+            --fondo-claro: #e9eff8;
         }
 
+        [data-testid="stAppViewContainer"] {
+            background: linear-gradient(135deg, #eaf0f9 0%, #d3e0f1 100%);
+            background-attachment: fixed;
+        }
+        [data-testid="stHeader"] { background: transparent; }
+
+        [data-testid="stMainBlockContainer"] {
+            background: transparent;
+            padding: 1rem 1.5rem;
+            margin: 0.5rem;
+            color: #1F2A44;
+        }
+
+        /* Panel lateral */
         [data-testid="stSidebar"] {
-            background: linear-gradient(180deg, #0a4d2c 0%, #0f8b4f 100%);
+            background: linear-gradient(180deg, #0B2A5B 0%, #003878 100%);
         }
-        
-        [data-testid="stSidebar"] * {
-            color: #f0f9f7;
-        }
-        
+        [data-testid="stSidebar"] * { color: #f2f6fc; }
+
+        /* Encabezado con logos */
         .hero {
-            background: linear-gradient(135deg, #0f8b4f 0%, #16c784 100%);
-            padding: 1rem;
-            border-radius: 15px;
-            text-align: center;
-            color: white;
+            background: #ffffff;
+            border-radius: 16px;
+            border-bottom: 5px solid var(--azul);
+            padding: 0.8rem 1.8rem;
             margin-bottom: 1rem;
-            box-shadow: 0 10px 35px rgba(15, 139, 79, 0.4);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1.2rem;
+            flex-wrap: wrap;
+            box-shadow: 0 8px 26px rgba(0, 56, 120, 0.18);
         }
-        
-        .hero h1 {
+        .hero-logo { height: 92px; width: auto; }
+        .hero-texto { text-align: center; flex: 1; min-width: 240px; }
+        .hero-texto h1 {
             margin: 0;
-            font-size: 1.8rem;
-            font-weight: bold;
+            font-size: 2rem;
+            font-weight: 800;
+            color: var(--azul);
         }
-        
-        .hero p {
+        .hero-texto p {
             margin: 0.3rem 0 0;
-            font-size: 0.95rem;
-            opacity: 0.95;
+            font-size: 1rem;
+            color: var(--pizarra);
         }
-        
-        h2 {
-            color: #0f8b4f;
-            border-bottom: 3px solid #16c784;
-            padding-bottom: 0.7rem;
-            margin-bottom: 1.5rem;
-        }
-        
-        h3 {
-            color: #1a5f3e;
-            margin-top: 1.5rem;
-        }
-        
+
+        h2, h3 { color: var(--azul); }
+        [data-testid="stCaptionContainer"] { color: var(--pizarra); }
+
+        /* Tarjetas de resumen */
         [data-testid="stMetric"] {
-            background: linear-gradient(135deg, #ecf9f5 0%, #dff7f0 100%);
+            background: #ffffff;
             padding: 0.6rem 1rem;
-            border-radius: 10px;
-            border-left: 4px solid #16c784;
+            border-radius: 12px;
+            border-left: 6px solid var(--azul);
+            box-shadow: 0 4px 16px rgba(0, 56, 120, 0.12);
         }
-        
+        [data-testid="stMetricLabel"] { color: var(--pizarra); }
+        [data-testid="stMetricValue"] { color: var(--azul); }
+
+        /* Pestañas */
+        button[data-baseweb="tab"] { font-weight: 600; color: #3a4a6b; }
+        button[data-baseweb="tab"][aria-selected="true"] { color: var(--azul); }
+        [data-baseweb="tab-highlight"] { background-color: var(--azul) !important; height: 3px; }
+
+        /* Cada gráfica en una tarjeta blanca para que resalte */
+        [data-testid="stPlotlyChart"], .stPlotlyChart {
+            background: #ffffff;
+            border-radius: 14px;
+            border: 1px solid #d6e2f3;
+            box-shadow: 0 4px 18px rgba(0, 56, 120, 0.12);
+            padding: 0.4rem;
+        }
+
         hr {
-            background: linear-gradient(90deg, transparent, #16c784, transparent);
+            background: linear-gradient(90deg, transparent, var(--azul), transparent);
             border: none;
             height: 2px;
             margin: 1rem 0;
@@ -200,8 +245,8 @@ def unificar_categorias(serie):
 
 
 # ---------------------------------------------------------------- COLORES
-PALETA = ["#6C5CE7", "#00B894", "#FD79A8", "#FDCB6E", "#0984E3",
-          "#E17055", "#00CEC9", "#A29BFE", "#FF7675", "#55EFC4"]
+PALETA = ["#003878", "#2F80ED", "#00A6A6", "#F2B134", "#E4572E",
+          "#7B61FF", "#17B890", "#FF7A90", "#586078", "#8FB8ED"]
 
 # Colores con significado (clave = categoría en minúsculas y sin acentos)
 COLORES_FIJOS = {
@@ -483,7 +528,7 @@ RANGOS_FRECUENCIA = {
     "1/7 · Sopas a Sal": ["Sopas instantaneas", "Salchicha", "Jamon", "Tocino", "Chorizo",
                           "Rikopollo", "Knor", "Sal"],
 }
-COLORES_RANGOS = ["#6C5CE7", "#FD79A8", "#00B894"]
+COLORES_RANGOS = ["#003878", "#F2B134", "#00A6A6"]
 
 
 def g_frecuencia_alimentos(df):
@@ -640,12 +685,15 @@ def main():
     aplicar_estilo()
 
     # Header
-    st.markdown("""
-    <div class="hero">
-        <h1>🥗 Análisis Nutricional</h1>
-        <p>Resultados de la encuesta</p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        '<div class="hero">'
+        + _img_tag("logo_unicach.png", "Universidad Autónoma de Ciencias y Artes de Chiapas")
+        + '<div class="hero-texto"><h1>Análisis Nutricional</h1>'
+        + '<p>Clínica de Nutrición UNICACH · Resultados de la encuesta</p></div>'
+        + _img_tag("logo_clinica.png", "Clínica de Nutrición UNICACH")
+        + '</div>',
+        unsafe_allow_html=True,
+    )
 
     # Sidebar
     with st.sidebar:
