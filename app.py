@@ -12,6 +12,7 @@ import re
 import unicodedata
 import base64
 import itertools
+import json
 from pathlib import Path
 from functools import lru_cache
 
@@ -783,6 +784,10 @@ def _a_posicion(serie, rng):
 
 def construir_figura(df, cfg):
     """Devuelve (figura, tabla_de_datos) según las opciones elegidas en el constructor."""
+    df = filtrar_por_cfg(df, cfg.get("filtro"))
+    if df.empty:
+        st.warning("Con ese filtro no queda ninguna persona. Cambia las opciones.")
+        return None, None
     tipo = cfg["tipo"]
     roles = {"X": cfg["x"]}
     if tipo == "Dispersión":
@@ -950,10 +955,139 @@ def aplicar_filtro(df, columna, seleccion):
     return df[df[columna].map(cumple)]
 
 
+# ---- Gráficas del dashboard que se pueden reemplazar por una personalizada
+ETIQUETAS_GRAFICAS = {
+    "sexo": "Demografía · Sexo",
+    "edad": "Demografía · Edad",
+    "ocupacion": "Demografía · Ocupación",
+    "imc": "Estado nutricional · IMC",
+    "icc": "Estado nutricional · ICC",
+    "desparasitacion": "Salud · Desparasitación",
+    "educacion": "Salud · Educación nutricional",
+    "lugar_compra": "Alimentación · Lugar de compra",
+    "frecuencia_alimentos": "Alimentación · Frecuencia de alimentos",
+    "realiza_af": "Actividad física · ¿Realiza AF?",
+    "tipo_af": "Actividad física · Tipo de AF",
+    "nivel_af": "Actividad física · Nivel de AF",
+    "traslado": "Actividad física · Medio de traslado",
+    "interes": "Actividad física · Interés por el ejercicio",
+    "salud_emocional": "Salud emocional",
+    "cultivos": "Cultivos y animales · Cultivos",
+    "animales": "Cultivos y animales · Animales",
+}
+
+GRAFICAS_BASE = {
+    "sexo": g_sexo, "edad": g_edad, "ocupacion": g_ocupacion, "imc": g_imc, "icc": g_icc,
+    "desparasitacion": g_desparasitacion, "educacion": g_educacion,
+    "lugar_compra": g_lugar_compra, "frecuencia_alimentos": g_frecuencia_alimentos,
+    "realiza_af": g_realiza_af, "tipo_af": g_tipo_af, "nivel_af": g_nivel_af,
+    "traslado": g_traslado, "interes": g_interes, "salud_emocional": g_salud_emocional,
+    "cultivos": g_cultivos, "animales": g_animales,
+}
+
+
+def _recargar():
+    """Vuelve a dibujar la página (para que todas las pestañas muestren el cambio)."""
+    f = getattr(st, "rerun", None) or getattr(st, "experimental_rerun")
+    f()
+
+
+def _personalizadas():
+    if "graficas_personalizadas" not in st.session_state:
+        st.session_state["graficas_personalizadas"] = {}
+    return st.session_state["graficas_personalizadas"]
+
+
+def mostrar_slot(df, clave):
+    """Muestra la gráfica de ese lugar: la que guardó el usuario o, si no hay, la original."""
+    guardadas = _personalizadas()
+    if clave in guardadas:
+        try:
+            fig, _ = construir_figura(df, guardadas[clave])
+        except Exception:
+            fig = None
+            st.warning("No se pudo dibujar tu gráfica personalizada (¿cambió el archivo?). "
+                       "Se muestra la original.")
+        if fig is not None:
+            mostrar(fig, clave)
+            st.caption("✏️ Gráfica personalizada")
+            if st.button("↩️ Restaurar la original", key=f"restaurar_{clave}"):
+                del guardadas[clave]
+                _recargar()
+            return
+    mostrar(GRAFICAS_BASE[clave](df), clave)
+
+
+def filtrar_por_cfg(df, filtro):
+    """Aplica el filtro guardado en la configuración (o ninguno)."""
+    if not filtro:
+        return df
+    col = filtro.get("columna")
+    if col not in df.columns:
+        return df
+    if "rango" in filtro:
+        lo, hi = filtro["rango"]
+        return df[df[col].between(lo, hi)]
+    valores = filtro.get("valores", [])
+    return aplicar_filtro(df, col, valores) if valores else df.iloc[0:0]
+
+
+def _copiar_cfg(cfg):
+    """Copia independiente y lista para guardarse como archivo."""
+    return json.loads(json.dumps(cfg, default=str))
+
+
+def _gestion_guardadas(df):
+    """Lista de gráficas reemplazadas, con restaurar y guardar/cargar el diseño en un archivo."""
+    guardadas = _personalizadas()
+    st.markdown("---")
+    with st.expander(f"📁 Mis gráficas guardadas ({len(guardadas)})"):
+        if not guardadas:
+            st.caption("Todavía no has reemplazado ninguna gráfica del dashboard.")
+        for clave in list(guardadas):
+            c1, c2 = st.columns([4, 1])
+            with c1:
+                cfg = guardadas[clave]
+                st.write(f"**{ETIQUETAS_GRAFICAS[clave]}** → {cfg.get('tipo')} de «{cfg.get('x')}»")
+            with c2:
+                if st.button("↩️ Restaurar", key=f"rest_{clave}"):
+                    del guardadas[clave]
+                    _recargar()
+        if guardadas:
+            if st.button("↩️ Restaurar todas las originales", key="rest_todas"):
+                guardadas.clear()
+                _recargar()
+            st.download_button("📥 Descargar mi diseño (para guardarlo)",
+                               json.dumps(guardadas, ensure_ascii=False, indent=2).encode("utf-8"),
+                               file_name="mi_diseno_dashboard.json", mime="application/json",
+                               key="cons_exportar")
+        st.caption("Los cambios duran mientras tengas la página abierta. "
+                   "Descarga tu diseño para poder cargarlo después.")
+        cargado = st.file_uploader("Cargar un diseño guardado (.json)", type=["json"], key="cons_cargar")
+        if cargado is not None:
+            marca = f"{cargado.name}-{cargado.size}"
+            if st.session_state.get("diseno_cargado") != marca:
+                try:
+                    datos = json.loads(cargado.getvalue().decode("utf-8"))
+                    validos = {k: v for k, v in datos.items()
+                               if k in GRAFICAS_BASE and isinstance(v, dict) and "x" in v and "tipo" in v}
+                    guardadas.update(validos)
+                    st.session_state["diseno_cargado"] = marca
+                    st.session_state["mensaje_guardado"] = f"✅ Diseño cargado ({len(validos)} gráficas)."
+                    _recargar()
+                except Exception:
+                    st.error("No pude leer ese archivo. Debe ser un diseño descargado desde esta página.")
+
+
 def pestana_constructor(df):
     st.markdown("### 🛠️ Arma tu propia gráfica")
     st.caption("Elige la pregunta, el tipo de gráfica y las opciones. "
-               "La gráfica se actualiza sola, sin tocar código.")
+               "La gráfica se actualiza sola, sin tocar código. "
+               "Al final puedes usarla para reemplazar una gráfica del dashboard.")
+
+    mensaje = st.session_state.pop("mensaje_guardado", None)
+    if mensaje:
+        st.success(mensaje)
 
     opciones = [c for c in df.columns if _normalizar(c) not in COLUMNAS_OCULTAS]
     izq, der = st.columns([1, 2.4])
@@ -981,20 +1115,20 @@ def pestana_constructor(df):
 
         st.markdown("**2 · Filtro (opcional)**")
         col_filtro = st.selectbox("Mostrar solo personas con…", ["(sin filtro)"] + opciones, key="cons_filtro")
-        df_f = df
+        filtro = None
         if col_filtro != "(sin filtro)":
             if pd.api.types.is_numeric_dtype(df[col_filtro]):
                 minimo, maximo = float(df[col_filtro].min()), float(df[col_filtro].max())
                 if minimo < maximo:
                     rango = st.slider("Rango", minimo, maximo, (minimo, maximo), key="cons_rango")
-                    df_f = df[df[col_filtro].between(rango[0], rango[1])]
+                    filtro = {"columna": col_filtro, "rango": [float(rango[0]), float(rango[1])]}
             else:
                 disponibles = conteos_columna(df, col_filtro)
                 if disponibles is not None:
                     opciones_f = list(disponibles.index)
                     elegidos = st.multiselect("Valores a incluir", opciones_f, default=opciones_f,
                                               key="cons_valores")
-                    df_f = aplicar_filtro(df, col_filtro, elegidos) if elegidos else df.iloc[0:0]
+                    filtro = {"columna": col_filtro, "valores": list(elegidos)}
 
         st.markdown("**3 · Opciones de la gráfica**")
         unidad, orden, modo, paso, intervalos, tendencia = "Personas", ORDENES[0], "Agrupadas", 10, 8, True
@@ -1020,21 +1154,36 @@ def pestana_constructor(df):
             alto = st.slider("Alto de la gráfica", 300, 800, 450, step=10, key="cons_alto")
 
     with der:
+        df_f = filtrar_por_cfg(df, filtro)
         if df_f.empty:
             st.warning("Con ese filtro no queda ninguna persona. Cambia las opciones.")
-            return
-        cfg = dict(x=x, y=y, color=color, tipo=tipo, separar=separar, unidad=unidad, orden=orden,
-                   modo=modo, paso=paso, intervalos=intervalos, tendencia=tendencia,
-                   paleta=paleta, titulo=titulo.strip(), valores=valores, leyenda=leyenda, alto=alto)
-        fig, tabla_datos = construir_figura(df_f, cfg)
-        if fig is not None:
-            st.plotly_chart(fig, use_container_width=True, key="constructor_grafica")
-            st.caption(f"Personas incluidas: {len(df_f)} de {len(df)}")
-            with st.expander("📋 Ver tabla de datos"):
-                st.dataframe(tabla_datos)
-                st.download_button("📥 Descargar esta tabla", tabla_datos.to_csv(index=False).encode("utf-8-sig"),
-                                   file_name="grafica_personalizada.csv", mime="text/csv",
-                                   key="cons_descarga")
+        else:
+            cfg = dict(x=x, y=y, color=color, tipo=tipo, separar=separar, unidad=unidad, orden=orden,
+                       modo=modo, paso=paso, intervalos=intervalos, tendencia=tendencia,
+                       paleta=paleta, titulo=titulo.strip(), valores=valores, leyenda=leyenda,
+                       alto=alto, filtro=filtro)
+            fig, tabla_datos = construir_figura(df, cfg)
+            if fig is not None:
+                st.plotly_chart(fig, use_container_width=True, key="constructor_grafica")
+                st.caption(f"Personas incluidas: {len(df_f)} de {len(df)}")
+                with st.expander("📋 Ver tabla de datos"):
+                    st.dataframe(tabla_datos)
+                    st.download_button("📥 Descargar esta tabla",
+                                       tabla_datos.to_csv(index=False).encode("utf-8-sig"),
+                                       file_name="grafica_personalizada.csv", mime="text/csv",
+                                       key="cons_descarga")
+
+                st.markdown("#### 💾 Usar esta gráfica en el dashboard")
+                destino = st.selectbox("Reemplazar la gráfica de:", list(ETIQUETAS_GRAFICAS),
+                                       format_func=lambda k: ETIQUETAS_GRAFICAS[k], key="cons_destino")
+                if st.button("💾 Guardar y reemplazar", key="cons_guardar"):
+                    _personalizadas()[destino] = _copiar_cfg(cfg)
+                    st.session_state["mensaje_guardado"] = (
+                        f"✅ Listo: «{ETIQUETAS_GRAFICAS[destino]}» ahora muestra tu gráfica. "
+                        "Revísala en su pestaña.")
+                    _recargar()
+
+    _gestion_guardadas(df)
 
 
 # ---------------------------------------------------------------- APP
@@ -1090,60 +1239,60 @@ def main():
     with tabs[0]:
         c1, c2, c3 = st.columns(3)
         with c1:
-            mostrar(g_sexo(df), "sexo")
+            mostrar_slot(df, "sexo")
         with c2:
-            mostrar(g_edad(df), "edad")
+            mostrar_slot(df, "edad")
         with c3:
-            mostrar(g_ocupacion(df), "ocupacion")
+            mostrar_slot(df, "ocupacion")
 
     with tabs[1]:
         c1, c2 = st.columns(2)
         with c1:
-            mostrar(g_imc(df), "imc")
+            mostrar_slot(df, "imc")
         with c2:
-            mostrar(g_icc(df), "icc")
+            mostrar_slot(df, "icc")
 
     with tabs[2]:
         c1, c2 = st.columns([3, 2])
         with c1:
-            mostrar(g_desparasitacion(df), "desparasitacion")
+            mostrar_slot(df, "desparasitacion")
         with c2:
-            mostrar(g_educacion(df), "educacion")
+            mostrar_slot(df, "educacion")
 
     with tabs[3]:
         c1, c2 = st.columns([1, 2])
         with c1:
-            mostrar(g_lugar_compra(df), "lugar_compra")
+            mostrar_slot(df, "lugar_compra")
         with c2:
-            mostrar(g_frecuencia_alimentos(df), "frecuencia_alimentos")
+            mostrar_slot(df, "frecuencia_alimentos")
         st.caption("Cada barra cuenta las personas que marcaron ese alimento. "
                    "Los rangos 3/7, 2/7 y 1/7 son los de la tabla de captura.")
 
     with tabs[4]:
         c1, c2, c3 = st.columns(3)
         with c1:
-            mostrar(g_realiza_af(df), "realiza_af")
+            mostrar_slot(df, "realiza_af")
         with c2:
-            mostrar(g_tipo_af(df), "tipo_af")
+            mostrar_slot(df, "tipo_af")
         with c3:
-            mostrar(g_nivel_af(df), "nivel_af")
+            mostrar_slot(df, "nivel_af")
         c4, c5 = st.columns(2)
         with c4:
-            mostrar(g_traslado(df), "traslado")
+            mostrar_slot(df, "traslado")
         with c5:
-            mostrar(g_interes(df), "interes")
+            mostrar_slot(df, "interes")
 
     with tabs[5]:
-        mostrar(g_salud_emocional(df), "salud_emocional")
+        mostrar_slot(df, "salud_emocional")
         st.caption("Las barras muestran cuántas veces se reportó cada estado emocional, "
                    "desglosado por sexo. Si una persona indicó varias emociones, cada una se cuenta.")
 
     with tabs[6]:
         c1, c2 = st.columns(2)
         with c1:
-            mostrar(g_cultivos(df), "cultivos")
+            mostrar_slot(df, "cultivos")
         with c2:
-            mostrar(g_animales(df), "animales")
+            mostrar_slot(df, "animales")
 
     with tabs[7]:
         pestana_constructor(df)
