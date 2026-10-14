@@ -11,6 +11,7 @@ import numpy as np
 import re
 import unicodedata
 import base64
+import itertools
 from pathlib import Path
 from functools import lru_cache
 
@@ -693,6 +694,349 @@ def g_animales(df):
     return grafico_barras(c, f"Animales en casa (Sí cuentan: {si} · No: {no})", horizontal=True)
 
 
+# ---------------------------------------------------------------- CONSTRUCTOR DE GRÁFICAS
+# Permite elegir pregunta, tipo de gráfica, filtros y colores desde menús (sin tocar código).
+COLUMNAS_OCULTAS = {"folio"}
+
+TIPOS_GRAFICA = ["Barras verticales", "Barras horizontales", "Pastel", "Dona",
+                 "Histograma", "Dispersión"]
+
+ORDENES = ["Mayor a menor", "Menor a mayor", "A-Z", "Como aparece en la base"]
+
+PALETAS_USUARIO = {
+    "Automática (colores con significado)": None,
+    "Azules UNICACH": ["#003878", "#2F80ED", "#8FB8ED", "#586078", "#00A6A6", "#F2B134", "#E4572E", "#7B61FF"],
+    "Vibrante": ["#6C5CE7", "#00B894", "#FD79A8", "#FDCB6E", "#0984E3", "#E17055", "#00CEC9", "#A29BFE"],
+    "Pastel suave": ["#8DD3C7", "#BEBADA", "#FB8072", "#80B1D3", "#FDB462", "#B3DE69", "#FCCDE5", "#FFED6F"],
+    "Semáforo": ["#00B894", "#FDCB6E", "#E17055", "#D63031", "#0984E3", "#6C5CE7"],
+    "Rosa y azul": ["#F472B6", "#3B82F6", "#A78BFA", "#34D399", "#FBBF24", "#F87171"],
+}
+
+
+def _limpiar_texto(v):
+    """Misma limpieza de unificar_categorias, para una sola respuesta."""
+    v = re.sub(r'\s+', ' ', str(v)).strip()
+    for mal, bien in CORRECCIONES.items():
+        v = re.sub(mal, bien, v, flags=re.IGNORECASE)
+    return v
+
+
+def _valores_celda(valor, es_numerica, separar):
+    """Lista de respuestas de una celda (varias si hay comas y se pide separar)."""
+    if pd.isna(valor):
+        return []
+    if es_numerica:
+        return [float(valor)]
+    if separar:
+        return [str(x) for x in explotar_valores_multiples(pd.DataFrame({"c": [valor]}), "c")]
+    texto = str(valor).strip()
+    return [texto] if texto else []
+
+
+def tabla_larga(df, roles, separar):
+    """Una fila por respuesta. roles = {"X": columna, "Y": columna, "C": columna}"""
+    numericas = {r: pd.api.types.is_numeric_dtype(df[c]) for r, c in roles.items()}
+    filas = []
+    for _, fila in df.iterrows():
+        listas = []
+        for r, c in roles.items():
+            vals = _valores_celda(fila[c], numericas[r], separar)
+            if not vals and r == "C":
+                vals = ["Sin dato"]
+            listas.append(vals)
+        for combo in itertools.product(*listas):
+            filas.append(dict(zip(roles.keys(), combo)))
+    tabla = pd.DataFrame(filas)
+    if not tabla.empty:
+        for r in roles:
+            if not numericas[r]:
+                tabla[r] = unificar_categorias(tabla[r])
+    return tabla, numericas
+
+
+def _colores_para(categorias, paleta):
+    secuencia = PALETAS_USUARIO.get(paleta)
+    categorias = list(categorias)
+    if secuencia is None:
+        return _mapa_colores(categorias)
+    return {c: secuencia[i % len(secuencia)] for i, c in enumerate(categorias)}
+
+
+def _ordenar_usuario(totales, orden, aparicion):
+    if orden == "Mayor a menor":
+        return list(totales.sort_values(ascending=False, kind="stable").index)
+    if orden == "Menor a mayor":
+        return list(totales.sort_values(ascending=True, kind="stable").index)
+    if orden == "A-Z":
+        return sorted(totales.index, key=_normalizar)
+    return [c for c in aparicion if c in totales.index]
+
+
+def _a_posicion(serie, rng):
+    """Numérica -> tal cual. Texto -> posición 0,1,2... con un poco de separación."""
+    if pd.api.types.is_numeric_dtype(serie):
+        return serie.astype(float), None
+    cats = list(serie.value_counts().index)
+    pos = serie.map({c: i for i, c in enumerate(cats)}).astype(float)
+    return pos + rng.uniform(-0.22, 0.22, len(serie)), cats
+
+
+def construir_figura(df, cfg):
+    """Devuelve (figura, tabla_de_datos) según las opciones elegidas en el constructor."""
+    tipo = cfg["tipo"]
+    roles = {"X": cfg["x"]}
+    if tipo == "Dispersión":
+        if cfg["y"] is None:
+            st.info("Elige la pregunta del eje Y.")
+            return None, None
+        roles["Y"] = cfg["y"]
+    if cfg["color"] is not None and tipo not in ("Pastel", "Dona"):
+        roles["C"] = cfg["color"]
+
+    tabla, num = tabla_larga(df, roles, cfg["separar"])
+    if tabla.empty:
+        st.warning("No hay datos con las opciones elegidas.")
+        return None, None
+
+    nombre_x = limpiar_columna(cfg["x"].strip())
+    tiene_color = "C" in roles
+    mostrar_leyenda = cfg["leyenda"]
+
+    # ------------------------------------------------ Pastel / Dona / Barras
+    if tipo in ("Barras verticales", "Barras horizontales", "Pastel", "Dona"):
+        natural = None
+        if num["X"]:   # preguntas numéricas (ej. Edad) se agrupan en rangos
+            paso = int(cfg["paso"])
+            inicios = (tabla["X"] // paso * paso).astype(int)
+            tabla["X"] = inicios.map(lambda a: f"{a}-{a + paso - 1}")
+            natural = list(pd.Series(tabla["X"].values, index=inicios.values).sort_index().drop_duplicates())
+
+        claves = ["X"] + (["C"] if tiene_color else [])
+        resumen = tabla.groupby(claves).size().reset_index(name="Cantidad")
+        resumen["Porcentaje"] = resumen["Cantidad"] / resumen["Cantidad"].sum() * 100
+        valor = "Porcentaje" if cfg["unidad"] == "Porcentaje" else "Cantidad"
+        eje_valor = "% de respuestas" if valor == "Porcentaje" else "Personas"
+        totales = resumen.groupby("X")["Cantidad"].sum()
+        aparicion = list(dict.fromkeys(tabla["X"]))
+        orden = natural or _ordenar_usuario(totales, cfg["orden"], aparicion)
+        resumen["Texto"] = resumen[valor].map(
+            lambda v: f"{v:.0f}%" if valor == "Porcentaje" else str(int(v)))
+
+        titulo = cfg["titulo"] or (f"{nombre_x}" + (f" según {limpiar_columna(cfg['color'].strip())}" if tiene_color else "")
+                                   + f" (n={int(resumen['Cantidad'].sum())})")
+        if tiene_color:
+            mapa = _colores_para(dict.fromkeys(resumen["C"]), cfg["paleta"])
+        else:
+            mapa = _colores_para(orden, cfg["paleta"])
+
+        if tipo in ("Pastel", "Dona"):
+            fig = px.pie(resumen, values=valor, names="X", color="X", color_discrete_map=mapa,
+                         category_orders={"X": orden}, hole=0.45 if tipo == "Dona" else 0, title=titulo)
+            if cfg["valores"]:
+                fig.update_traces(textinfo="label+percent", textposition="outside")
+            fig.update_layout(showlegend=mostrar_leyenda)
+        else:
+            horizontal = tipo == "Barras horizontales"
+            comunes = dict(color="C" if tiene_color else "X", color_discrete_map=mapa,
+                           text="Texto" if cfg["valores"] else None, title=titulo,
+                           category_orders={"X": orden},
+                           barmode="stack" if cfg["modo"] == "Apiladas" else "group")
+            if horizontal:
+                fig = px.bar(resumen, x=valor, y="X", orientation="h", **comunes)
+                fig.update_yaxes(autorange="reversed", title=None)
+                fig.update_xaxes(title=eje_valor)
+            else:
+                fig = px.bar(resumen, x="X", y=valor, **comunes)
+                fig.update_xaxes(title=nombre_x)
+                fig.update_yaxes(title=eje_valor)
+            apilada = tiene_color and cfg["modo"] == "Apiladas"
+            fig.update_traces(textposition="inside" if apilada else "outside", cliponaxis=False)
+            fig.update_layout(bargap=0.25, showlegend=mostrar_leyenda and tiene_color)
+        tabla_datos = resumen.drop(columns=["Texto"]).rename(
+            columns={"X": cfg["x"], "C": cfg["color"]})
+
+    # ------------------------------------------------ Histograma
+    elif tipo == "Histograma":
+        if not num["X"]:
+            st.info("El histograma necesita una pregunta numérica (por ejemplo Edad).")
+            return None, None
+        titulo = cfg["titulo"] or f"Distribución de {nombre_x} (n={len(tabla)})"
+        if tiene_color:
+            mapa = _colores_para(dict.fromkeys(tabla["C"]), cfg["paleta"])
+            fig = px.histogram(tabla, x="X", color="C", color_discrete_map=mapa,
+                               nbins=int(cfg["intervalos"]), title=titulo)
+        else:
+            fig = px.histogram(tabla, x="X", nbins=int(cfg["intervalos"]), title=titulo)
+            fig.update_traces(marker_color=(PALETAS_USUARIO.get(cfg["paleta"]) or ["#003878"])[0])
+        fig.update_xaxes(title=nombre_x)
+        fig.update_yaxes(title="Personas")
+        fig.update_layout(bargap=0.05, showlegend=mostrar_leyenda and tiene_color)
+        tabla_datos = tabla.rename(columns={"X": cfg["x"], "C": cfg["color"]})
+
+    # ------------------------------------------------ Dispersión
+    else:
+        nombre_y = limpiar_columna(cfg["y"].strip())
+        rng = np.random.default_rng(1)
+        pos_x, cats_x = _a_posicion(tabla["X"], rng)
+        pos_y, cats_y = _a_posicion(tabla["Y"], rng)
+        d = pd.DataFrame({"Eje X": pos_x.values, "Eje Y": pos_y.values,
+                          "Valor X": tabla["X"].astype(str).values,
+                          "Valor Y": tabla["Y"].astype(str).values})
+        titulo = cfg["titulo"] or f"{nombre_y} según {nombre_x} (n={len(d)})"
+        hover = {"Eje X": False, "Eje Y": False, "Valor X": True, "Valor Y": True}
+        if tiene_color:
+            d["Color"] = tabla["C"].values
+            mapa = _colores_para(dict.fromkeys(d["Color"]), cfg["paleta"])
+            fig = px.scatter(d, x="Eje X", y="Eje Y", color="Color", color_discrete_map=mapa,
+                             hover_data=hover, title=titulo)
+        else:
+            fig = px.scatter(d, x="Eje X", y="Eje Y", hover_data=hover, title=titulo)
+            fig.update_traces(marker_color=(PALETAS_USUARIO.get(cfg["paleta"]) or ["#003878"])[0])
+        fig.update_traces(marker=dict(size=12, opacity=0.85, line=dict(width=1, color="white")))
+        fig.update_xaxes(title=nombre_x)
+        fig.update_yaxes(title=nombre_y)
+        if cats_x:
+            fig.update_xaxes(tickmode="array", tickvals=list(range(len(cats_x))), ticktext=cats_x)
+        if cats_y:
+            fig.update_yaxes(tickmode="array", tickvals=list(range(len(cats_y))), ticktext=cats_y)
+
+        if cfg["tendencia"]:
+            if cats_x is None and cats_y is None:
+                if len(d) >= 3 and d["Eje X"].nunique() > 1 and d["Eje Y"].nunique() > 1:
+                    m, b = np.polyfit(d["Eje X"], d["Eje Y"], 1)
+                    r = np.corrcoef(d["Eje X"], d["Eje Y"])[0, 1]
+                    xs = np.array([d["Eje X"].min(), d["Eje X"].max()])
+                    fig.add_scatter(x=xs, y=m * xs + b, mode="lines", name=f"Tendencia (r = {r:.2f})",
+                                    line=dict(color="#003878", width=3, dash="dash"))
+                else:
+                    st.caption("No hay suficientes datos distintos para trazar la tendencia.")
+            elif (cats_x is None) != (cats_y is None):
+                if cats_y is not None:   # promedio de X por cada categoría de Y
+                    medias = d.groupby("Valor Y")["Eje X"].mean()
+                    xs_l, ys_l = [float(medias[c]) for c in cats_y], list(range(len(cats_y)))
+                else:                    # promedio de Y por cada categoría de X
+                    medias = d.groupby("Valor X")["Eje Y"].mean()
+                    ys_l, xs_l = [float(medias[c]) for c in cats_x], list(range(len(cats_x)))
+                fig.add_scatter(x=xs_l, y=ys_l, mode="lines+markers", name="Promedio por categoría",
+                                line=dict(color="#003878", width=2, dash="dash"),
+                                marker=dict(symbol="diamond", size=12, color="#003878"))
+            else:
+                st.caption("La línea de tendencia necesita al menos una pregunta numérica.")
+        fig.update_layout(showlegend=mostrar_leyenda)
+        tabla_datos = tabla.rename(columns={"X": cfg["x"], "Y": cfg["y"], "C": cfg["color"]})
+
+    fig.update_layout(height=int(cfg["alto"]), margin=dict(t=70, b=30, l=20, r=20),
+                      title_font_size=16, legend=dict(orientation="h", y=1.1, x=0, title=None))
+    return fig, tabla_datos
+
+
+def _indice_de(opciones, nombre, defecto=0):
+    for i, o in enumerate(opciones):
+        if _normalizar(o) == _normalizar(nombre):
+            return i
+    return defecto
+
+
+def aplicar_filtro(df, columna, seleccion):
+    """Se queda con las personas cuya respuesta coincide con alguna de las opciones elegidas."""
+    sel = {_normalizar(_limpiar_texto(s)) for s in seleccion}
+
+    def cumple(v):
+        if pd.isna(v):
+            return False
+        vals = explotar_valores_multiples(pd.DataFrame({"c": [v]}), "c")
+        return any(_normalizar(_limpiar_texto(x)) in sel for x in vals)
+
+    return df[df[columna].map(cumple)]
+
+
+def pestana_constructor(df):
+    st.markdown("### 🛠️ Arma tu propia gráfica")
+    st.caption("Elige la pregunta, el tipo de gráfica y las opciones. "
+               "La gráfica se actualiza sola, sin tocar código.")
+
+    opciones = [c for c in df.columns if _normalizar(c) not in COLUMNAS_OCULTAS]
+    izq, der = st.columns([1, 2.4])
+
+    with izq:
+        st.markdown("**1 · Datos**")
+        x = st.selectbox("Pregunta principal", opciones,
+                         index=_indice_de(opciones, "Sexo"), key="cons_x")
+        tipo = st.selectbox("Tipo de gráfica", TIPOS_GRAFICA, key="cons_tipo")
+        x_numerica = pd.api.types.is_numeric_dtype(df[x])
+
+        y = None
+        if tipo == "Dispersión":
+            y = st.selectbox("Pregunta del eje Y", opciones,
+                             index=_indice_de(opciones, "Edad"), key="cons_y")
+
+        color = None
+        if tipo not in ("Pastel", "Dona"):
+            elegido = st.selectbox("Dividir / colorear por (opcional)", ["(ninguna)"] + opciones,
+                                   key="cons_color")
+            color = None if elegido == "(ninguna)" else elegido
+
+        separar = st.checkbox("Separar respuestas con comas", value=True, key="cons_sep",
+                              help="Si alguien respondió 'Feliz, Ansioso', cuenta cada emoción por separado.")
+
+        st.markdown("**2 · Filtro (opcional)**")
+        col_filtro = st.selectbox("Mostrar solo personas con…", ["(sin filtro)"] + opciones, key="cons_filtro")
+        df_f = df
+        if col_filtro != "(sin filtro)":
+            if pd.api.types.is_numeric_dtype(df[col_filtro]):
+                minimo, maximo = float(df[col_filtro].min()), float(df[col_filtro].max())
+                if minimo < maximo:
+                    rango = st.slider("Rango", minimo, maximo, (minimo, maximo), key="cons_rango")
+                    df_f = df[df[col_filtro].between(rango[0], rango[1])]
+            else:
+                disponibles = conteos_columna(df, col_filtro)
+                if disponibles is not None:
+                    opciones_f = list(disponibles.index)
+                    elegidos = st.multiselect("Valores a incluir", opciones_f, default=opciones_f,
+                                              key="cons_valores")
+                    df_f = aplicar_filtro(df, col_filtro, elegidos) if elegidos else df.iloc[0:0]
+
+        st.markdown("**3 · Opciones de la gráfica**")
+        unidad, orden, modo, paso, intervalos, tendencia = "Personas", ORDENES[0], "Agrupadas", 10, 8, True
+        if tipo in ("Barras verticales", "Barras horizontales", "Pastel", "Dona"):
+            if tipo in ("Barras verticales", "Barras horizontales"):
+                unidad = st.radio("Mostrar", ["Personas", "Porcentaje"], horizontal=True, key="cons_unidad")
+            if color is not None and tipo in ("Barras verticales", "Barras horizontales"):
+                modo = st.radio("Barras", ["Agrupadas", "Apiladas"], horizontal=True, key="cons_modo")
+            if x_numerica:
+                paso = st.slider("Tamaño de cada rango", 1, 20, 10, key="cons_paso")
+            else:
+                orden = st.selectbox("Orden", ORDENES, key="cons_orden")
+        if tipo == "Histograma":
+            intervalos = st.slider("Número de intervalos", 3, 30, 8, key="cons_intervalos")
+        if tipo == "Dispersión":
+            tendencia = st.checkbox("Mostrar línea de tendencia", value=True, key="cons_tendencia")
+
+        with st.expander("🎨 Apariencia"):
+            paleta = st.selectbox("Colores", list(PALETAS_USUARIO.keys()), key="cons_paleta")
+            titulo = st.text_input("Título (vacío = automático)", value="", key="cons_titulo")
+            valores = st.checkbox("Mostrar valores sobre la gráfica", value=True, key="cons_valores_chk")
+            leyenda = st.checkbox("Mostrar leyenda", value=True, key="cons_leyenda")
+            alto = st.slider("Alto de la gráfica", 300, 800, 450, step=10, key="cons_alto")
+
+    with der:
+        if df_f.empty:
+            st.warning("Con ese filtro no queda ninguna persona. Cambia las opciones.")
+            return
+        cfg = dict(x=x, y=y, color=color, tipo=tipo, separar=separar, unidad=unidad, orden=orden,
+                   modo=modo, paso=paso, intervalos=intervalos, tendencia=tendencia,
+                   paleta=paleta, titulo=titulo.strip(), valores=valores, leyenda=leyenda, alto=alto)
+        fig, tabla_datos = construir_figura(df_f, cfg)
+        if fig is not None:
+            st.plotly_chart(fig, use_container_width=True, key="constructor_grafica")
+            st.caption(f"Personas incluidas: {len(df_f)} de {len(df)}")
+            with st.expander("📋 Ver tabla de datos"):
+                st.dataframe(tabla_datos)
+                st.download_button("📥 Descargar esta tabla", tabla_datos.to_csv(index=False).encode("utf-8-sig"),
+                                   file_name="grafica_personalizada.csv", mime="text/csv",
+                                   key="cons_descarga")
+
+
 # ---------------------------------------------------------------- APP
 def main():
     aplicar_estilo()
@@ -741,7 +1085,7 @@ def main():
 
     tabs = st.tabs(["👥 Demografía", "⚖️ Estado Nutricional", "💊 Salud y Educación",
                     "🛒 Alimentación", "🏃 Actividad Física", "💭 Salud Emocional",
-                    "🌱 Cultivos y Animales"])
+                    "🌱 Cultivos y Animales", "🛠️ Constructor de gráficas"])
 
     with tabs[0]:
         c1, c2, c3 = st.columns(3)
@@ -800,6 +1144,9 @@ def main():
             mostrar(g_cultivos(df), "cultivos")
         with c2:
             mostrar(g_animales(df), "animales")
+
+    with tabs[7]:
+        pestana_constructor(df)
 
     # Descarga del resumen (un solo clic)
     resumen = pd.DataFrame({
